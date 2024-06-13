@@ -1,7 +1,7 @@
 from PIL import Image
 
 # Load the image
-image_path = 'path_to_your_image.jpg'  # Replace with your image file path
+image_path = '/Users/zheer/Desktop/x.jpg'  # Replace with your image file path
 image = Image.open(image_path)
 
 # Convert the image to grayscale (just in case it's not already in black and white)

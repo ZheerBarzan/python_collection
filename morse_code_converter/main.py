@@ -42,12 +42,23 @@ def decrypt(message):
     return decipher
 
 def main():
-    message = "my name is zheer"
-    result = encrypt(message)
-    print(f"Original message: {message}")
-    print(f"Encrypted message: {result}")
-    decrypted = decrypt(result)
-    print(f"Decrypted message: {decrypted}")
+    option = input("Enter '1' to encrypt a message or '2' to decrypt a message: ")
+    if option == '1':
+        message = input("Enter the message to encrypt: ")
+        result = encrypt(message)
+        print(f"Encrypted message: {result}")
+    elif option == '2':
+        message = input("Enter the message to decrypt: ")
+        result = decrypt(message)
+        print(f"Decrypted message: {result}")
+
+    original_message = input("Enter y/n to see or hide the original message: ")
+
+    if original_message == 'y':
+        print(f"Original message: {message}")
+    else:
+        print("Original message hidden")
+
 
 if __name__ == '__main__':
     main()

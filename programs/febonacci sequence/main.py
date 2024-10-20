@@ -15,3 +15,4 @@ def feb(n):
 
 print(feb(7))
 print(feb(50))
+print(memo)

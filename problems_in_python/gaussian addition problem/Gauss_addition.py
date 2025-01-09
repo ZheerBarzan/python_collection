@@ -1,5 +1,3 @@
-#gauss additon problems
-
 def gauss_additon(n):
     return n*(n+1)//2
 

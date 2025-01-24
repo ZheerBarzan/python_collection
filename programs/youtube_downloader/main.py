@@ -6,7 +6,7 @@ def download_video(url,path):
     print(f"Video downloaded to {path}")
 
 
-url = "https://www.youtube.com/watch?v=BPpDrWeUpzY&list=RDBPpDrWeUpzY&index=1"
+url = "https://www.youtube.com/watch?v=xvFZjo5PgG0"
 path = "C:/Users/zheer/Desktop/"
 
 download_video(url, path)

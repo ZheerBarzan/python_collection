@@ -3,19 +3,8 @@ import zipfile
 import tempfile
 import shutil
 from pathlib import Path
-import subprocess
-import sys
-
-
-def check_dependencies():
-    """Check if required dependencies are installed"""
-    try:
-        from pxr import Usd, UsdGeom, Gf
-        return True
-    except ImportError:
-        print("USD Python library not found. Please install it first:")
-        print("pip install usd-core")
-        return False
+import re
+import json
 
 
 def extract_usdz(usdz_path, temp_dir):
@@ -29,140 +18,162 @@ def extract_usdz(usdz_path, temp_dir):
         return False
 
 
-def find_usd_file(temp_dir):
-    """Find the main USD file in extracted directory"""
-    usd_files = list(Path(temp_dir).glob('*.usd')) + list(Path(temp_dir).glob('*.usda'))
-    if usd_files:
-        return str(usd_files[0])
-    return None
+def find_usd_files(temp_dir):
+    """Find all USD files in extracted directory"""
+    usd_files = []
+    for ext in ['*.usd', '*.usda', '*.usdc']:
+        usd_files.extend(list(Path(temp_dir).glob(ext)))
+    return usd_files
 
 
-def convert_usd_to_obj(usd_file, obj_output_path):
-    """Convert USD file to OBJ using USD Python API"""
+def parse_usda_file(usda_path):
+    """Parse ASCII USD file to extract basic geometry data"""
+    vertices = []
+    faces = []
+    normals = []
+    uvs = []
+
     try:
-        from pxr import Usd, UsdGeom, Gf
+        with open(usda_path, 'r', encoding='utf-8') as f:
+            content = f.read()
 
-        # Open USD stage
-        stage = Usd.Stage.Open(usd_file)
-        if not stage:
-            print(f"Failed to open USD file: {usd_file}")
-            return False
+        # Extract points (vertices)
+        points_pattern = r'point3f\[\]\s+points\s*=\s*\[(.*?)\]'
+        points_match = re.search(points_pattern, content, re.DOTALL)
+        if points_match:
+            points_str = points_match.group(1)
+            # Parse coordinate tuples
+            coord_pattern = r'\(([-\d.e+\-]+),\s*([-\d.e+\-]+),\s*([-\d.e+\-]+)\)'
+            coords = re.findall(coord_pattern, points_str)
+            for x, y, z in coords:
+                vertices.append(f"v {float(x)} {float(y)} {float(z)}")
 
-        vertices = []
-        faces = []
-        normals = []
-        uvs = []
-        vertex_offset = 1  # OBJ files are 1-indexed
+        # Extract face vertex indices
+        face_indices_pattern = r'int\[\]\s+faceVertexIndices\s*=\s*\[(.*?)\]'
+        face_indices_match = re.search(face_indices_pattern, content, re.DOTALL)
 
-        # Traverse all mesh prims in the stage
-        for prim in stage.Traverse():
-            if prim.IsA(UsdGeom.Mesh):
-                mesh = UsdGeom.Mesh(prim)
+        face_counts_pattern = r'int\[\]\s+faceVertexCounts\s*=\s*\[(.*?)\]'
+        face_counts_match = re.search(face_counts_pattern, content, re.DOTALL)
 
-                # Get mesh data
-                points_attr = mesh.GetPointsAttr()
-                faces_attr = mesh.GetFaceVertexIndicesAttr()
-                face_counts_attr = mesh.GetFaceVertexCountsAttr()
+        if face_indices_match and face_counts_match:
+            # Parse face indices
+            indices_str = face_indices_match.group(1)
+            indices = [int(x.strip()) for x in indices_str.split(',') if x.strip().isdigit()]
 
-                if points_attr and faces_attr and face_counts_attr:
-                    # Get vertex positions
-                    points = points_attr.Get()
-                    if points:
-                        for point in points:
-                            vertices.append(f"v {point[0]} {point[1]} {point[2]}")
+            # Parse face counts
+            counts_str = face_counts_match.group(1)
+            counts = [int(x.strip()) for x in counts_str.split(',') if x.strip().isdigit()]
 
-                    # Get face data
-                    face_indices = faces_attr.Get()
-                    face_counts = face_counts_attr.Get()
+            # Build faces
+            idx = 0
+            for count in counts:
+                if count >= 3 and idx + count <= len(indices):
+                    face_verts = []
+                    for i in range(count):
+                        face_verts.append(str(indices[idx] + 1))  # OBJ is 1-indexed
+                        idx += 1
+                    faces.append(f"f {' '.join(face_verts)}")
+                else:
+                    idx += count
 
-                    if face_indices and face_counts:
-                        idx = 0
-                        for count in face_counts:
-                            if count >= 3:  # Only process triangles and quads
-                                face_verts = []
-                                for i in range(count):
-                                    face_verts.append(str(face_indices[idx] + vertex_offset))
-                                    idx += 1
-                                faces.append(f"f {' '.join(face_verts)}")
-                            else:
-                                idx += count
+        # Try to extract normals
+        normals_pattern = r'normal3f\[\]\s+normals\s*=\s*\[(.*?)\]'
+        normals_match = re.search(normals_pattern, content, re.DOTALL)
+        if normals_match:
+            normals_str = normals_match.group(1)
+            normal_coords = re.findall(coord_pattern, normals_str)
+            for x, y, z in normal_coords:
+                normals.append(f"vn {float(x)} {float(y)} {float(z)}")
 
-                        vertex_offset += len(points)
+        # Try to extract UV coordinates
+        uv_pattern = r'texCoord2f\[\]\s+(?:st|primvars:st)\s*=\s*\[(.*?)\]'
+        uv_match = re.search(uv_pattern, content, re.DOTALL)
+        if uv_match:
+            uv_str = uv_match.group(1)
+            uv_coord_pattern = r'\(([-\d.e+\-]+),\s*([-\d.e+\-]+)\)'
+            uv_coords = re.findall(uv_coord_pattern, uv_str)
+            for u, v in uv_coords:
+                uvs.append(f"vt {float(u)} {float(v)}")
 
-                # Try to get normals
-                normals_attr = mesh.GetNormalsAttr()
-                if normals_attr:
-                    normal_data = normals_attr.Get()
-                    if normal_data:
-                        for normal in normal_data:
-                            normals.append(f"vn {normal[0]} {normal[1]} {normal[2]}")
+        return vertices, faces, normals, uvs
 
-                # Try to get UV coordinates
-                primvars = mesh.GetPrimvars()
-                for primvar in primvars:
-                    if primvar.GetPrimvarName() in ['st', 'uv']:
-                        uv_data = primvar.Get()
-                        if uv_data:
-                            for uv in uv_data:
-                                uvs.append(f"vt {uv[0]} {uv[1]}")
-                        break
+    except Exception as e:
+        print(f"Error parsing USD file: {e}")
+        return [], [], [], []
 
-        # Write OBJ file
+
+def convert_usd_to_obj_simple(usd_files, obj_output_path):
+    """Convert USD files to OBJ using simple text parsing"""
+    all_vertices = []
+    all_faces = []
+    all_normals = []
+    all_uvs = []
+    vertex_offset = 0
+
+    for usd_file in usd_files:
+        if usd_file.suffix.lower() == '.usda':  # ASCII format
+            vertices, faces, normals, uvs = parse_usda_file(usd_file)
+
+            # Add vertices
+            all_vertices.extend(vertices)
+
+            # Add faces with vertex offset
+            for face in faces:
+                face_parts = face.split()
+                if len(face_parts) > 1:
+                    adjusted_indices = []
+                    for i in range(1, len(face_parts)):  # Skip 'f'
+                        try:
+                            old_idx = int(face_parts[i])
+                            new_idx = old_idx + vertex_offset
+                            adjusted_indices.append(str(new_idx))
+                        except ValueError:
+                            adjusted_indices.append(face_parts[i])
+                    all_faces.append(f"f {' '.join(adjusted_indices)}")
+
+            # Add normals and UVs
+            all_normals.extend(normals)
+            all_uvs.extend(uvs)
+
+            vertex_offset += len(vertices)
+
+    # Write OBJ file
+    try:
         with open(obj_output_path, 'w') as obj_file:
             obj_file.write("# Converted from USDZ\n")
-            obj_file.write("# Generated by USDZ to OBJ Converter\n\n")
+            obj_file.write("# Generated by Simple USDZ to OBJ Converter\n\n")
 
             # Write vertices
-            for vertex in vertices:
+            for vertex in all_vertices:
                 obj_file.write(vertex + '\n')
 
             # Write normals
-            if normals:
+            if all_normals:
                 obj_file.write('\n')
-                for normal in normals:
+                for normal in all_normals:
                     obj_file.write(normal + '\n')
 
             # Write UV coordinates
-            if uvs:
+            if all_uvs:
                 obj_file.write('\n')
-                for uv in uvs:
+                for uv in all_uvs:
                     obj_file.write(uv + '\n')
 
             # Write faces
-            if faces:
+            if all_faces:
                 obj_file.write('\n')
-                for face in faces:
+                for face in all_faces:
                     obj_file.write(face + '\n')
 
-        return True
+        return len(all_vertices) > 0 and len(all_faces) > 0
 
     except Exception as e:
-        print(f"Error converting USD to OBJ: {e}")
-        return False
-
-
-def convert_usdz_to_obj_fallback(usdz_path, obj_output_path):
-    """Fallback method using command line tools if available"""
-    try:
-        # Try using usdcat command line tool
-        result = subprocess.run([
-            'usdcat', '--flatten', usdz_path, '-o', obj_output_path.replace('.obj', '.usd')
-        ], capture_output=True, text=True)
-
-        if result.returncode == 0:
-            print("Note: Converted to USD format. You may need additional tools to convert USD to OBJ.")
-            return True
-        else:
-            return False
-    except FileNotFoundError:
+        print(f"Error writing OBJ file: {e}")
         return False
 
 
 def convert_usdz_to_obj(input_folder, output_folder):
     """Convert all USDZ files in input folder to OBJ format"""
-
-    if not check_dependencies():
-        print("\nTrying fallback method...")
 
     # Create output folder if it doesn't exist
     Path(output_folder).mkdir(parents=True, exist_ok=True)
@@ -176,6 +187,8 @@ def convert_usdz_to_obj(input_folder, output_folder):
         return
 
     print(f"Found {len(usdz_files)} USDZ files to convert...")
+    print("Using simple text-based parser (no USD library required)")
+    print("-" * 60)
 
     converted_count = 0
     failed_count = 0
@@ -192,29 +205,26 @@ def convert_usdz_to_obj(input_folder, output_folder):
                     failed_count += 1
                     continue
 
-                # Find USD file
-                usd_file = find_usd_file(temp_dir)
-                if not usd_file:
-                    print(f"✗ No USD file found in {usdz_file.name}")
+                # Find USD files
+                usd_files = find_usd_files(temp_dir)
+                if not usd_files:
+                    print(f"✗ No USD files found in {usdz_file.name}")
                     failed_count += 1
                     continue
+
+                print(f"  Found {len(usd_files)} USD files inside")
 
                 # Generate output filename
                 obj_filename = usdz_file.stem + '.obj'
                 obj_output_path = Path(output_folder) / obj_filename
 
                 # Convert USD to OBJ
-                if convert_usd_to_obj(usd_file, str(obj_output_path)):
+                if convert_usd_to_obj_simple(usd_files, str(obj_output_path)):
                     print(f"✓ Converted: {usdz_file.name} -> {obj_filename}")
                     converted_count += 1
                 else:
-                    # Try fallback method
-                    if convert_usdz_to_obj_fallback(str(usdz_file), str(obj_output_path)):
-                        print(f"✓ Converted (fallback): {usdz_file.name}")
-                        converted_count += 1
-                    else:
-                        print(f"✗ Failed to convert {usdz_file.name}")
-                        failed_count += 1
+                    print(f"✗ Failed to convert {usdz_file.name} (no geometry found)")
+                    failed_count += 1
 
         except Exception as e:
             print(f"✗ Error processing {usdz_file.name}: {str(e)}")
@@ -225,10 +235,17 @@ def convert_usdz_to_obj(input_folder, output_folder):
     if failed_count > 0:
         print(f"Failed to convert: {failed_count} files")
 
+    if converted_count > 0:
+        print(f"\nOBJ files saved to: {output_folder}")
+        print("\nNote: This converter extracts basic geometry only.")
+        print("Materials and textures are not converted.")
+
 
 def main():
-    print("USDZ to OBJ Converter")
-    print("=" * 30)
+    print("Simple USDZ to OBJ Converter")
+    print("=" * 35)
+    print("This version works without USD libraries!")
+    print()
 
     # Configure your paths here
     input_folder = input("Enter the path to your USDZ files folder: ").strip()

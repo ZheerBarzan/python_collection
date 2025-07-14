@@ -1,100 +1,130 @@
 import os
 import argparse
 from pxr import Usd, UsdGeom
+import trimesh
+import numpy as np
 
-# For FBX export
-try:
-    from pxr import UsdFbx
-except ImportError:
-    print("Warning: UsdFbx module not found. FBX export will not be available.")
+def convert_usdz_to_obj(input_filepath, output_dir):
+    """
+    Converts a single USDZ file to OBJ format, placing it in the specified output directory.
+    This function focuses on extracting UsdGeomMesh geometry and exporting it via trimesh.
+    Note: This conversion will primarily export geometry (vertices, faces).
+    Complex materials (PBR), UVs, normals, and advanced USD features (e.g., instancing,
+    skeletons, animations) will likely NOT be fully preserved or translated to OBJ.
+    """
+    print(f"Processing '{input_filepath}'...")
 
-# For STL export
-try:
-    import trimesh
+    # Extract base name without extension
+    base_name = os.path.splitext(os.path.basename(input_filepath))[0]
+    output_obj_filepath = os.path.join(output_dir, f"{base_name}.obj")
 
-    stl_export_available = True
-except ImportError:
-    print("Warning: trimesh module not found. STL export will not be available.")
-    stl_export_available = False
+    try:
+        stage = Usd.Stage.Open(input_filepath)
+        if not stage:
+            print(f"  Error: Could not open USD stage from '{input_filepath}'. Skipping.")
+            return False
 
+        all_meshes = []
 
-def convert_usdz_to_obj(input_file, output_file):
-    """Convert USDZ file to OBJ format"""
-    # The USD library has built-in OBJ export
-    stage = Usd.Stage.Open(input_file)
+        # Traverse the USD stage to find all UsdGeomMesh primitives
+        for prim in stage.TraverseAll():
+            if prim.IsA(UsdGeom.Mesh):
+                mesh_prim = UsdGeom.Mesh(prim)
 
-    # Export to OBJ
-    UsdGeom.PointInstancer.ExportPointInstancerToOBJ(stage, output_file)
-    print(f"Exported to OBJ: {output_file}")
+                points = mesh_prim.GetPointsAttr().Get()
+                face_vertex_counts = mesh_prim.GetFaceVertexCountsAttr().Get()
+                face_vertex_indices = mesh_prim.GetFaceVertexIndicesAttr().Get()
 
+                if points is None or face_vertex_counts is None or face_vertex_indices is None:
+                    print(f"    Warning: Skipping mesh '{prim.GetPath()}' due to missing geometry data.")
+                    continue
 
-def convert_usdz_to_fbx(input_file, output_file):
-    """Convert USDZ file to FBX format"""
-    # Check if UsdFbx is available
-    if "UsdFbx" not in globals():
-        print("FBX export not available. Please install the USD FBX plugin.")
+                # Convert PxR array types to numpy arrays
+                vertices_np = np.array(points, dtype=np.float32)
+
+                # Triangulate N-gons into triangles for trimesh.
+                # USD can have arbitrary polygons, but OBJ/trimesh often prefer triangles.
+                # This is a simple fan triangulation (assumes convex polygons).
+                trimesh_faces = []
+                current_index = 0
+                for count in face_vertex_counts:
+                    polygon_indices = face_vertex_indices[current_index : current_index + count]
+                    # Simple fan triangulation for polygons with more than 3 vertices
+                    if count >= 3:
+                        for i in range(1, count - 1):
+                            trimesh_faces.append([polygon_indices[0], polygon_indices[i], polygon_indices[i+1]])
+                    current_index += count
+
+                if len(trimesh_faces) == 0:
+                    print(f"    Warning: No triangulated faces found for mesh '{prim.GetPath()}'. Skipping.")
+                    continue
+
+                # Create a trimesh object
+                mesh = trimesh.Trimesh(vertices=vertices_np, faces=np.array(trimesh_faces, dtype=np.int32))
+                all_meshes.append(mesh)
+
+        if not all_meshes:
+            print(f"  No mesh geometry found in '{input_filepath}' to convert to OBJ. Skipping.")
+            return False
+
+        # Combine all trimeshes into a single scene and then export as one OBJ
+        # This handles USD files that contain multiple root meshes
+        if len(all_meshes) > 1:
+            combined_scene = trimesh.Scene(all_meshes)
+            # dump(concatenate=True) will merge all meshes into a single Trimesh object
+            combined_mesh = combined_scene.dump(concatenate=True)
+        else:
+            combined_mesh = all_meshes[0]
+
+        # Export to OBJ
+        combined_mesh.export(output_obj_filepath)
+        print(f"  Successfully converted '{os.path.basename(input_filepath)}' to '{os.path.basename(output_obj_filepath)}'.")
+        return True
+
+    except Exception as e:
+        print(f"  Error converting '{input_filepath}' to OBJ: {e}")
         return False
-
-    # Open the USD stage
-    stage = Usd.Stage.Open(input_file)
-
-    # Export to FBX
-    UsdFbx.WriteFbx(output_file, stage)
-    print(f"Exported to FBX: {output_file}")
-    return True
-
-
-def convert_usdz_to_stl(input_file, output_file):
-    """Convert USDZ file to STL format using trimesh"""
-    if not stl_export_available:
-        print("STL export not available. Please install trimesh.")
-        return False
-
-    # First, convert to OBJ as an intermediate format
-    temp_obj = os.path.splitext(output_file)[0] + "_temp.obj"
-    convert_usdz_to_obj(input_file, temp_obj)
-
-    # Load the OBJ with trimesh and export to STL
-    mesh = trimesh.load(temp_obj)
-    mesh.export(output_file)
-
-    # Clean up the temporary file
-    os.remove(temp_obj)
-    print(f"Exported to STL: {output_file}")
-    return True
-
 
 def main():
-    parser = argparse.ArgumentParser(description='Convert USDZ files to OBJ, FBX, or STL formats')
-    parser.add_argument('input_file', help='Input USDZ file')
-    parser.add_argument('output_format', choices=['obj', 'fbx', 'stl'], help='Output format')
-    parser.add_argument('--output', '-o', help='Output file name (optional)')
+    parser = argparse.ArgumentParser(description='Convert USDZ files from an input directory to OBJ files in a new output directory.')
+    parser.add_argument('input_directory', help='Path to the directory containing USDZ files.')
+    parser.add_argument('--output_directory', '-o', default='converted_objs',
+                        help='Name of the new directory to store OBJ files. Default is "converted_objs". '
+                             'This directory will be created if it does not exist.')
 
     args = parser.parse_args()
 
-    # Validate input file
-    if not os.path.exists(args.input_file):
-        print(f"Error: Input file {args.input_file} does not exist")
+    # Ensure input directory exists
+    if not os.path.isdir(args.input_directory):
+        print(f"Error: Input directory '{args.input_directory}' does not exist.")
         return
 
-    if not args.input_file.lower().endswith('.usdz'):
-        print(f"Warning: Input file {args.input_file} does not have .usdz extension")
+    # Create the output directory if it doesn't exist
+    os.makedirs(args.output_directory, exist_ok=True)
+    print(f"Output files will be saved to: '{os.path.abspath(args.output_directory)}'")
 
-    # Determine output file name
-    if args.output:
-        output_file = args.output
-    else:
-        base_name = os.path.splitext(args.input_file)[0]
-        output_file = f"{base_name}.{args.output_format}"
+    converted_count = 0
+    skipped_count = 0
 
-    # Perform conversion
-    if args.output_format == 'obj':
-        convert_usdz_to_obj(args.input_file, output_file)
-    elif args.output_format == 'fbx':
-        convert_usdz_to_fbx(args.input_file, output_file)
-    elif args.output_format == 'stl':
-        convert_usdz_to_stl(args.input_file, output_file)
+    # Iterate through files in the input directory
+    for filename in os.listdir(args.input_directory):
+        if filename.lower().endswith('.usdz'):
+            input_filepath = os.path.join(args.input_directory, filename)
+            if convert_usdz_to_obj(input_filepath, args.output_directory):
+                converted_count += 1
+            else:
+                skipped_count += 1
+        else:
+            print(f"Skipping non-USDZ file: '{filename}'")
+
+    print("\n--- Conversion Summary ---")
+    print(f"Converted: {converted_count} file(s)")
+    print(f"Skipped:   {skipped_count} file(s)")
+    print(f"Output directory: '{os.path.abspath(args.output_directory)}'")
 
 
 if __name__ == '__main__':
     main()
+
+    # you have to come into this program folder and use the command below:
+    #python3 main.py /Users/zheer/OneDrive/Scans/ProjectMedusa --output_directory my_converted_models

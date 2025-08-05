@@ -5,13 +5,7 @@ import trimesh
 import numpy as np
 
 def convert_usdz_to_obj(input_filepath, output_dir):
-    """
-    Converts a single USDZ file to OBJ format, placing it in the specified output directory.
-    This function focuses on extracting UsdGeomMesh geometry and exporting it via trimesh.
-    Note: This conversion will primarily export geometry (vertices, faces).
-    Complex materials (PBR), UVs, normals, and advanced USD features (e.g., instancing,
-    skeletons, animations) will likely NOT be fully preserved or translated to OBJ.
-    """
+
     print(f"Processing '{input_filepath}'...")
 
     # Extract base name without extension
@@ -39,12 +33,9 @@ def convert_usdz_to_obj(input_filepath, output_dir):
                     print(f"    Warning: Skipping mesh '{prim.GetPath()}' due to missing geometry data.")
                     continue
 
-                # Convert PxR array types to numpy arrays
                 vertices_np = np.array(points, dtype=np.float32)
 
-                # Triangulate N-gons into triangles for trimesh.
-                # USD can have arbitrary polygons, but OBJ/trimesh often prefer triangles.
-                # This is a simple fan triangulation (assumes convex polygons).
+
                 trimesh_faces = []
                 current_index = 0
                 for count in face_vertex_counts:
@@ -67,7 +58,7 @@ def convert_usdz_to_obj(input_filepath, output_dir):
             print(f"  No mesh geometry found in '{input_filepath}' to convert to OBJ. Skipping.")
             return False
 
-        # Combine all trimeshes into a single scene and then export as one OBJ
+        # Combine all tri-meshes into a single scene and then export as one OBJ
         # This handles USD files that contain multiple root meshes
         if len(all_meshes) > 1:
             combined_scene = trimesh.Scene(all_meshes)
@@ -126,5 +117,3 @@ def main():
 if __name__ == '__main__':
     main()
 
-    # you have to come into this program folder and use the command below:
-    #python3 main.py /Users/zheer/OneDrive/Scans/ProjectMedusa --output_directory my_converted_models

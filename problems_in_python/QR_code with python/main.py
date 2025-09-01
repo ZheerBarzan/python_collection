@@ -3,7 +3,7 @@ import png
 from pyqrcode import QRCode
 
 # String which represent the QR code
-name = "www.google.com"
+name = "https://itd.auis.edu.krd/reset-password/"
 try:
     # Generate QR code
     url = pyqrcode.create(name)

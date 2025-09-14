@@ -3,7 +3,7 @@ import png
 from pyqrcode import QRCode
 
 # String which represent the QR code
-name = "https://www.youtube.com/watch?v=QjgpkW2hZyg&list=PLQH2Tb3p5KiI7Ve38Zk_9VOiRacR85k-v&index=1"
+name = "https://docs.google.com/forms/d/1mSaWecmu-yZVS93p2EbRWH4ivs4b1QPiJptgOp1TzJE/viewform?edit_requested=true"
 try:
     # Generate QR code
     url = pyqrcode.create(name)
